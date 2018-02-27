@@ -4,3 +4,7 @@
 ros/build/
 
 ros/devel/
+
+ros/src/styx/__pycache__/
+
+*.pyc
