@@ -2,3 +2,5 @@
 \.idea/
 
 ros/build/
+
+ros/devel/
