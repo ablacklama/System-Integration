@@ -25,21 +25,6 @@ TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
 
 
-class Position(object):
-    """
-    added by Mike
-    """
-    def __init__(self):
-        self.x = 0
-        self.y = 0
-        self.z = 0
-    def updatePosition(self, msg):
-        # msg type is PoseStamped
-        self.x = msg.pose.position.x
-        self.y = msg.pose.position.y
-        self.z = msg.pose.position.z
-
-
 class WaypointUpdater(object):
     def __init__(self):
         rospy.init_node('waypoint_updater')
@@ -55,7 +40,7 @@ class WaypointUpdater(object):
 
         # TODO: Add other member variables you need below
         self.close_waypoint_id = -1
-        self.cur_position = Position()
+        self.cur_position = None
         self.base_waypoint = None
         self.base_waypoint_len = 0
         # styx_msgs/msg/TrafficLight.msg, unknown is 4.
@@ -68,7 +53,7 @@ class WaypointUpdater(object):
             - update current position
         :param msg:
         """
-        self.cur_position.updatePosition(msg)
+        self.cur_position = msg.pose.position
 
         if self.base_waypoint is not None:
             self.find_closest_waypoint()
@@ -111,7 +96,8 @@ class WaypointUpdater(object):
     def find_closest_waypoint(self):
         min_id = -1
         min_dist = 0
-        dl = lambda a, b: math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+        # dl = lambda a, b: math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+        dl = lambda a, b: ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
         for i, wp in enumerate(self.base_waypoint):
             dist = dl(wp.pose.pose.position, self.cur_position)
             if i == 0:
