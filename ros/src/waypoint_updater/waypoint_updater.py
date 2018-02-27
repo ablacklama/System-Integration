@@ -24,6 +24,8 @@ TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 
 LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
 
+# Maximum distance from any waypoint position to current car position. 10 KM radius.
+MAX_DISTANCE_FROM_WPP = 10000
 
 class WaypointUpdater(object):
     def __init__(self):
@@ -43,7 +45,7 @@ class WaypointUpdater(object):
 
         self.waypoints = None
         self.current_waypoint = None
-        self.max_dist = None
+        self.total_waypoint_distance = None
         # styx_msgs/msg/TrafficLight.msg, unknown is 4.
         self.traffic_light = 4
 
@@ -55,13 +57,15 @@ class WaypointUpdater(object):
         to the recorded waypoint of vehicle current position.
         '''
 
-        #rospy.loginfo('New waypoint recorded {0}'.format(msg.header.seq))
+        rospy.loginfo('New waypoint recorded {0}, Position: {1}'.format(
+                msg.header.seq, msg.pose.position))
 
         # Note: msg, docs.ros.org/api/geometry_msgs/html/msg/Pose.html
         self.current_waypoint = msg
 
         if self.waypoints is None:
-            # No waypoints subscribed yet.
+            rospy.logwarn("Missing Waypoints, Check if /base_waypoints is "
+                    "subscribed!")
             return
 
         # Find the closest waypoint.
@@ -81,9 +85,9 @@ class WaypointUpdater(object):
 
         # Note: wayponints loaded are in Lane format. styx_msg/lane.msg
         self.waypoints = msg.waypoints
-        self.max_dist = self.distance(self.waypoints, 0, len(self.waypoints)-1)
-        rospy.loginfo('Total waypoints received: {0}'.format(len(self.waypoints)))
-        #rospy.loginfo('Max waypoints distance: {0}'.format(self.max_distance))
+        self.total_waypoint_distance = self.distance(self.waypoints, 0, len(self.waypoints)-1)
+        self._print_waypoints()
+        rospy.logdebug('Distance covered by waypoints: {0}'.format(self.total_waypoint_distance))
 
     def traffic_cb(self, msg):
         ''' Load traffic light state.'''
@@ -101,7 +105,8 @@ class WaypointUpdater(object):
         waypoints[waypoint].twist.twist.linear.x = velocity
 
     def distance(self, waypoints, wp1_i, wp2_i):
-        ''' Overall distance between 2 waypoint indexs. '''
+        ''' Overall distance between two waypoints identified by index. '''
+
         dist = 0
         dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
         for i in range(wp1_i, wp2_i+1):
@@ -111,26 +116,36 @@ class WaypointUpdater(object):
         return dist
 
     def find_closest_waypoint(self):
-        ''' Return index of the current waypoint in all waypoints. '''
+        ''' Return index of the waypoint closest to current position. '''
 
         i = 0 # Not attempting Range here, Can have many waypoints.
         min_i = 0
-        max_dist = self.max_distance
+        max_dist = MAX_DISTANCE_FROM_WPP
         wp_c = self.current_waypoint.pose.position
 
-        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
+        # z cordinate does not play a big role here as we are in 2-D space.
+        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2) # + (a.z-b.z)**2)
         for next_waypoint in self.waypoints:
             wp_n = next_waypoint.pose.pose.position
 
             dist = dl(wp_c, wp_n)
-            # Once current waypoint is hit in all waypoints, index is set
+            # Once nearest waypoint is hit in all waypoints, index is set
             # at that point. Giving only waypoints in forward direction.
+            # This however will not work in scenarios where if car intends to
+            # drive reverse.
             if dist < max_dist:
                 min_i = i
                 max_dist = dist
             i += 1
 
         return min_i
+
+    def _print_waypoints(self):
+        ''' Print co-ordinates tracked by the waypoints. '''
+
+        rospy.loginfo("Total waypoints: {0}".format(len(self.waypoints)))
+        for i, waypoint in enumerate(self.waypoints):
+            rospy.loginfo("{0} : {1}".format(i, waypoint.pose.pose.position))
 
 
 if __name__ == '__main__':
