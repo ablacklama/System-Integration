@@ -10,3 +10,5 @@ ros/src/styx/__pycache__/
 *.pyc
 
 *.tmp
+
+ros/launch/debug_styx\.launch

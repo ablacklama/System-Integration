@@ -39,7 +39,8 @@ class WaypointUpdater(object):
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
         # TODO: Add other member variables you need below
-        self.close_waypoint_id = -1
+        self.close_waypoint_id = 0
+
         self.cur_position = None
         self.base_waypoint = None
         self.base_waypoint_len = 0
@@ -66,9 +67,7 @@ class WaypointUpdater(object):
         """
         self.base_waypoint = msg.waypoints
         self.base_waypoint_len = len(msg.waypoints)
-
-        rospy.loginfo(rospy.get_caller_id() + " base_waypoint len: %s", self.base_waypoint_len)
-        # rospy.loginfo(rospy.get_caller_id() + " startid info: \n%s", min_id)
+        rospy.loginfo(rospy.get_caller_id() + " Total base_waypoint: %s", self.base_waypoint_len)
 
     def traffic_cb(self, msg):
         # Callback for /traffic_waypoint message. Implement
@@ -98,6 +97,7 @@ class WaypointUpdater(object):
         min_dist = 0
         # dl = lambda a, b: math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
         dl = lambda a, b: ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+        # TODO: need to be optimize (use prev_close_point id)
         for i, wp in enumerate(self.base_waypoint):
             dist = dl(wp.pose.pose.position, self.cur_position)
             if i == 0:
@@ -108,17 +108,12 @@ class WaypointUpdater(object):
 
         if self.cur_position.x > self.base_waypoint[min_id].pose.pose.position.x:
             min_id += 1
-
         self.close_waypoint_id = min_id
+        # rospy.loginfo(rospy.get_caller_id() + " prev_id : %s, curr_id : %s",
+        #               self.prev_close_waypoint_id, self.close_waypoint_id)
 
     def publish(self):
-        """
-            Format the message and publish.
-            ref: waypoint_updater.py/publish()
-        """
-        # rospy.loginfo(rospy.get_caller_id() + " Close to the end! ")
-        print "Current at waypoint id: " + str(self.close_waypoint_id)
-
+        # ref: waypoint_updater.py/publish()
         lane = Lane()
         lane.header.frame_id = '/world'
         lane.header.stamp = rospy.Time(0)
