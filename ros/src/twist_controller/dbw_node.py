@@ -57,8 +57,33 @@ class DBWNode(object):
         # self.controller = Controller(<Arguments you wish to provide>)
 
         # TODO: Subscribe to all the topics you need to
+        rospy.Subscriber('/current_velocity', TwistStamped, self.cur_velocity_cb)
+        rospy.Subscriber('/twist_cmd', TwistStamped, self.twist_cmd_cb)
+        rospy.Subscriber('/vehicle/dbw_enabled', Bool, self.dbw_enabled_cb)
+
+        # List of variables need to use
+        self.dbw_enabled = None
+
+        self.cur_linear_velocity = None
+        self.cur_angular_velocity = None
+
+        self.target_linear_velocity = None
+        self.target_angular_velocity = None
 
         self.loop()
+
+    def cur_velocity_cb(self, msg):
+        self.cur_linear_velocity = msg.twist.linear.x
+        self.cur_angular_velocity = msg.twist.angular.z
+
+    def twist_cmd_cb(self, msg):
+        self.target_linear_velocity = msg.twist.linear.x
+        self.target_angular_velocity = msg.twist.angular.z
+
+    def dbw_enabled_cb(self, msg):
+        # painful lesson: uncheck the manual to activate the topic otherwise nothing in echo topic
+        self.dbw_enabled = msg.data
+        rospy.loginfo(rospy.get_caller_id() + " dbw status is : %s",self.dbw_enabled)
 
     def loop(self):
         rate = rospy.Rate(50) # 50Hz
@@ -94,4 +119,5 @@ class DBWNode(object):
 
 
 if __name__ == '__main__':
+    # TODO: do we need to implement try except ?
     DBWNode()
