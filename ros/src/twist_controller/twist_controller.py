@@ -16,8 +16,18 @@ ONE_MPH = 0.44704
 
 
 class Controller(object):
-    def __init__(self, *args, **kwargs):
-        # TODO: Implement
+    # def __init__(self, *args, **kwargs):
+    def __init__(self, **ros_param):
+        # Init PID
+        kp = 3.
+        ki = 0.005
+        kd = 0.1
+        self.pid = PID(kp, ki, kd)
+
+        # Init yaw controller min_speed need test
+        min_speed = 0.1
+        self.yaw_controller = YawController(min_speed, **ros_param)
+
         pass
 
     def control(self, *args, **kwargs):

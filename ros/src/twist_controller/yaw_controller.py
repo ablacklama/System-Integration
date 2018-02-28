@@ -1,15 +1,15 @@
 from math import atan
 
 class YawController(object):
-    def __init__(self, wheel_base, steer_ratio, min_speed, max_lat_accel, max_steer_angle):
-        self.wheel_base = wheel_base
-        self.steer_ratio = steer_ratio
+    def __init__(self, min_speed, **ros_param):
+        # original param format:
+        # https://github.com/udacity/CarND-Capstone/blob/master/ros/src/twist_controller/yaw_controller.py
         self.min_speed = min_speed
-        self.max_lat_accel = max_lat_accel
-
-        self.min_angle = -max_steer_angle
-        self.max_angle = max_steer_angle
-
+        self.wheel_base = ros_param['wheel_base']
+        self.steer_ratio = ros_param['steer_ratio']
+        self.max_lat_accel = ros_param['max_lat_accel']
+        self.min_angle = -ros_param['max_steer_angle']
+        self.max_angle = ros_param['max_steer_angle']
 
     def get_angle(self, radius):
         angle = atan(self.wheel_base / radius) * self.steer_ratio
