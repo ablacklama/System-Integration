@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 import rospy
-from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Int32
+from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
 
 import math
@@ -30,6 +30,8 @@ MAX_DISTANCE_FROM_WPP = 10000
 class WaypointUpdater(object):
     def __init__(self):
         rospy.init_node('waypoint_updater')
+        # We might need to modify this
+        # rfe link: https://discussions.udacity.com/t/solved-stuck-at-steer-value-yawcontroller/499558
         rospy.loginfo('Waypoint Updater ...')
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
