@@ -18,19 +18,35 @@ ONE_MPH = 0.44704
 class Controller(object):
     # def __init__(self, *args, **kwargs):
     def __init__(self, **ros_param):
-        # Init PID
+        # Init PID TODO: tweaking
         kp = 3.
         ki = 0.005
         kd = 0.1
+
         self.pid = PID(kp, ki, kd)
 
-        # Init yaw controller min_speed need test
+        # Init yaw controller min_speed TODO: need test min_speed param
         min_speed = 0.1
         self.yaw_controller = YawController(min_speed, **ros_param)
 
         pass
 
-    def control(self, *args, **kwargs):
-        # TODO: Change the arg, kwarg list to suit your needs
+    # def control(self, target_linear_velocity, target_angular_velocity,
+    #                   cur_linear_velocity, dbw_status, **kwargs):
+    def control(self, target_linear_velocity, target_angular_velocity,
+                      cur_linear_velocity, dbw_status):
+        # Check input info is ready
+        if dbw_status is None or False:
+            return 0, 0, 0
+
+        # TODO: get throttle and brake
+        acc = 0.5
+
+        acc = (target_linear_velocity - cur_linear_velocity) / 0.02
+
+        # get steer angle
+        steer = self.yaw_controller.get_steering(target_linear_velocity, target_angular_velocity,
+                                                 cur_linear_velocity)
+
         # Return throttle, brake, steer
-        return 1., 0., 0.
+        return (acc, 0., steer) if acc > 0. else (0., acc, steer)
