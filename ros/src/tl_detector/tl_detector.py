@@ -120,7 +120,11 @@ class TLDetector(object):
         cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
 
         #Get classification
-        return self.light_classifier.get_classification(cv_image)
+        traffic_class, score = self.light_classifier.get_classification(cv_image)
+        print("Traffic Light is {}".format(traffic_class))
+        print("Score is {}".format(score))
+        return traffic_class
+        # return self.light_classifier.get_classification(cv_image)
 
     def process_traffic_lights(self):
         """Finds closest visible traffic light, if one exists, and determines its
@@ -141,8 +145,11 @@ class TLDetector(object):
         #TODO find the closest visible traffic light (if one exists)
 
         if light:
+            # TODO: Currently use ground truth traffic light info: self.lights
             state = self.get_light_state(light)
+            state_gt = self.lights[0].state  # all the traffic lights states are the same in the simulator
             return light_wp, state
+
         self.waypoints = None
         return -1, TrafficLight.UNKNOWN
 
