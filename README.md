@@ -7,3 +7,4 @@ For the light classification to work you need to download the trained inference 
 `System-Integration/ros/src/tl_detector/light_classification/`
 
 [simulator inference graph](https://drive.google.com/file/d/1UTfbLhiTZHl1KokmE349eSgbvcOtRdUh/view?usp=sharing)
+[real world inference graph](https://drive.google.com/open?id=1Degc0r4zolyN-_MbrrRSRXWS3TL_aF1k)
