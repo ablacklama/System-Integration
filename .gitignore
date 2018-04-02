@@ -12,5 +12,8 @@ ros/src/styx/__pycache__/
 *.tmp
 
 ros/launch/debug_styx\.launch
+<<<<<<< HEAD
+=======
 
 *.pb
+>>>>>>> spencer/master
