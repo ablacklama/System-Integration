@@ -1,8 +1,10 @@
 #!/usr/bin/env python
-
+import os
 import math
 import tf
 import rospy
+import itertools
+from collections import deque
 from std_msgs.msg import Int32, Bool
 from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
@@ -52,13 +54,13 @@ class WaypointUpdater(object):
 
         self.waypoints = None
         self.num_waypoints = 0
-        self.max_velocity = 2.5 # Carla max velocity. 10 Km/h.
+        self.max_velocity = 2.8 # Carla max velocity. 10 Km/h.
         self.current_car_pos = None
         self.current_car_wpi = -1
         self.total_waypoint_distance = -1
         self.distance_to_tlw = -1 # Distance to traffic light waypoint.
         self.dbw_enabled = False # DBW enabled; Autonomous state.
-        self.final_waypoints = []
+        self.final_waypoints = deque()
         self.publish_sequence_num = 0
         self.is_dbw_warn_logged = False
         # styx_msgs/msg/TrafficLight.msg, unknown is 4.
@@ -74,6 +76,7 @@ class WaypointUpdater(object):
         self.num_wpi_to_tl = 0
         self.recalculate_velocity = False
 
+        self.batch_count = 0 # Maitain queue in batch.
         rospy.loginfo("Starting loop...")
 
         self.loop()
@@ -88,26 +91,35 @@ class WaypointUpdater(object):
                     self.is_dbw_warn_logged = True
                 continue
 
+            self.batch_count += 1
             # Final waypoints queue.
             if not self.final_waypoints:
                 self.queue_nextwp_idx = self.final_waypoints_init()
+
+            # Do batch processing; Publish in batch.
+            if (not self.recalculate_velocity) and (self.batch_count <
+                    int(LOOKAHEAD_WPS/3)):
+                continue
             else: # Update queue.
+                self.batch_count = 0
                 next_wpi = self.get_next_wpi(self.final_waypoints,
                         self.current_car_pos)
-                del self.final_waypoints[:next_wpi]
+                for i in xrange(next_wpi):
+                    self.final_waypoints.popleft()
 
                 # Append new waypoints.
-                for i in range(next_wpi):
+                for i in xrange(next_wpi):
                     waypoint = self.waypoints[self.queue_nextwp_idx]
-                    waypoint.twist.twist.linear.x = self.max_velocity
                     self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
                             self.num_waypoints)
+                    waypoint.twist.twist.linear.x = self.max_velocity
                     self.final_waypoints.append(waypoint)
 
             # Set Control State.
             # Update velocity till tl index in final waypoints, continue if
             # final waypoints is less than tl index.
             if self.recalculate_velocity:
+                #rospy.logwarn("Recalculating velocity..")
                 self.next_control_state = self.set_stopping_state()
                 self.recalculate_velocity, prev_vi = \
                         self.update_waypoints_velocity(prev_vi)
@@ -118,11 +130,25 @@ class WaypointUpdater(object):
                     continue
                 else:
                     # Re-update velocity if needed.
-                    for idx in range(LOOKAHEAD_WPS):
+                    for idx in xrange(LOOKAHEAD_WPS):
                         self.set_waypoint_velocity(idx, self.max_velocity)
 
+
+            # Skip few index's if car is behind.
+            #p1 = self.final_waypoints[0].pose.pose.position
+            #p2 = self.current_car_pos.position
+            #skip_i = 0
+            #delta = math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2)
+            #if delta > 1.0: # Greater than 1 meter.
+            #    skip_i = 3
+            #    rospy.logwarn("publishing car_pos and current car_pos delta:{0}".
+            #            format(delta))
+
+            # TODO: Notice that if this is missing, re-calculate waypoints but
+            # keep their velocities.
+
             # Publish Final waypoints queue.
-            self.publish_waypoints(self.final_waypoints)
+            self.publish_waypoints(self.final_waypoints, 0)
             self.is_dbw_warn_logged = False
             rospy_rate.sleep()
 
@@ -133,18 +159,19 @@ class WaypointUpdater(object):
 
         final_waypoints_idx = self.get_waypoints_idx(self.current_car_wpi,
                 self.current_car_wpi + LOOKAHEAD_WPS)
-        self.final_waypoints = [self.waypoints[i] for i in
-                final_waypoints_idx]
+        self.final_waypoints = deque([self.waypoints[i] for i in
+                final_waypoints_idx])
         next_start_idx = ((self.current_car_wpi + LOOKAHEAD_WPS) %
                 self.num_waypoints)
 
         for idx, _ in enumerate(self.final_waypoints):
                 self.set_waypoint_velocity(idx, self.max_velocity)
         return next_start_idx
-    def publish_waypoints(self, final_waypoints):
+
+    def publish_waypoints(self, final_waypoints, start_index=0):
 
         lane = Lane()
-        lane.waypoints = final_waypoints
+        lane.waypoints = list(final_waypoints)[start_index:]
         lane.header.frame_id = '/world'
         lane.header.stamp = rospy.Time.now()
         lane.header.seq = self.publish_sequence_num
@@ -210,7 +237,7 @@ class WaypointUpdater(object):
         else: # STOP
             vi = 0
 
-        for idx in range(self.num_wpi_to_tl):
+        for idx in xrange(self.num_wpi_to_tl):
             if self.next_control_state == ControlState.SafeDecelerate:
                 # Velocity at waypoint i= vi = v0 - a*delta_time.
                 vi = v_prev - (
@@ -225,6 +252,15 @@ class WaypointUpdater(object):
             self.set_waypoint_velocity(idx, vi)
             v_prev = vi
 
+        # set remaining waypoints from TL to beyond as 0.
+        for idx in xrange(self.num_wpi_to_tl, LOOKAHEAD_WPS):
+            self.set_waypoint_velocity(idx, 0.0)
+
+        #rospy.logwarn("Updating car_to_tl with:{0} velocities".format(
+        #        [x.twist.twist.linear.x for x in
+        #            itertools.islice(self.final_waypoints, 0,
+        #                self.num_wpi_to_tl)]))
+
         # To recalculate on next set of queue waypoints.
         if self.num_wpi_to_tl > LOOKAHEAD_WPS:
             return True, v_prev
@@ -233,7 +269,7 @@ class WaypointUpdater(object):
 
     def get_waypoints_idx(self, start, end):
         ''' Returns a list of waypoint index's in circular fashion. '''
-        return [idx % self.num_waypoints for idx in range(start, end)]
+        return [idx % self.num_waypoints for idx in xrange(start, end)]
 
     def set_stopping_state(self):
         '''
@@ -287,14 +323,19 @@ class WaypointUpdater(object):
         emergency_stop_dist = ((car_velocity_pow/MAX_DECELERATION_RATE) -
                 STOP_OFFSET)
 
+        rate = None
+        #rospy.logwarn("Distance to TL:{0}".format(self.distance_to_tlw))
         if (self.distance_to_tlw <= safe_stop_dist and
                 self.distance_to_tlw > emergency_stop_dist):
-            return ControlState.SafeDecelerate
+            rate = ControlState.SafeDecelerate
         elif (self.distance_to_tlw <= emergency_stop_dist and
                 self.distance_to_tlw > STOP_OFFSET):
-            return ControlState.QuickDecelerate
+            rate = ControlState.QuickDecelerate
         else:
-            return ControlState.Stop
+            rate =  ControlState.Stop
+
+        #rospy.logwarn("Setting control state:{0} 1:SD, 2:QD, 3:Stop".format(rate))
+        return rate
 
     def validate_dbw(self):
         '''
@@ -353,8 +394,8 @@ class WaypointUpdater(object):
         # Get average velocity.
         mid_i = self.num_waypoints/2
         avg_velocity = sum([self.waypoints[i].twist.twist.linear.x for i in
-            range(mid_i, mid_i+20)])
-        self.max_velocity = avg_velocity/20 - 2.0
+            xrange(mid_i, mid_i+20)])
+        self.max_velocity = 5.0 #avg_velocity/20 - 2.0
         rospy.loginfo("Avg velocity:{0}".format(self.max_velocity))
 
         self.total_waypoint_distance = self.distance(self.waypoints, 0, self.num_waypoints-1)
@@ -371,6 +412,7 @@ class WaypointUpdater(object):
         self.next_tl_wpi = msg.data if msg.data >= 0 else -1
 
         if self.next_tl_wpi >= 0:
+            #rospy.logwarn("traffic_cb: recieved TL:{0}".format(self.next_tl_wpi))
             rospy.loginfo("Recieved stop traffic light. WPI: {0}".
                     format(self.next_tl_wpi))
 
@@ -395,7 +437,7 @@ class WaypointUpdater(object):
 
         dist = 0
         dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)#  + (a.z-b.z)**2)
-        for i in range(wp1_i, wp2_i+1):
+        for i in xrange(wp1_i, wp2_i+1):
             dist += dl(waypoints[wp1_i].pose.pose.position,
                     waypoints[i].pose.pose.position)
             wp1_i = i

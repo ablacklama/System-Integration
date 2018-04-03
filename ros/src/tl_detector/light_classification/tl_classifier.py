@@ -41,11 +41,13 @@ class TLClassifier(object):
             self.t_scores = self.model_graph.get_tensor_by_name('detection_scores:0')
             self.t_classes = self.model_graph.get_tensor_by_name('detection_classes:0')
 
-        if use_gpu:
+        if not use_gpu:
             config = tf.ConfigProto(device_count={'GPU': 0})
             self.sess = tf.Session(graph=self.model_graph, config=config)
         else:
-            self.sess = tf.Session(graph=self.model_graph)
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+            self.sess = tf.Session(graph=self.model_graph, config=config)
 
     def predict(self, img):
         """
