@@ -187,12 +187,12 @@ class TLDetector(object):
 
         # TODO fix non-simulator cases if needed.
         if self.is_simulator:
-            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
+            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
 
             #Get classification
             traffic_class, score = self.light_classifier.get_classification(cv_image)
         else:
-            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
+            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
             #Get classification
             traffic_class, score = self.light_classifier.get_classification(cv_image)
 
