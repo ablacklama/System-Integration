@@ -45,7 +45,9 @@ class TLClassifier(object):
             config = tf.ConfigProto(device_count={'GPU': 0})
             self.sess = tf.Session(graph=self.model_graph, config=config)
         else:
-            self.sess = tf.Session(graph=self.model_graph)
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+            self.sess = tf.Session(graph=self.model_graph, config=config)
 
     def predict(self, img):
         """
