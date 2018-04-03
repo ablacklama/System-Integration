@@ -1,6 +1,8 @@
-#Class to handle all the traffic light detection for Carla
+#Class to handle all the traffic light detection for Carlai
 import numpy as np
+import rospy
 import tensorflow as tf
+from tensorflow.python.client import device_lib
 from styx_msgs.msg import TrafficLight
 
 #class is made to have one instance of it created and used for all images
@@ -11,8 +13,23 @@ class TLClassifier(object):
 		cpu = False if you want the model to run on gpu.
 		cpu should only be true if you don't have enough gpu memory to contain the model.
 		"""
+
+        use_gpu = False
+
+        # System has GPU?
+        gpu_aval = [x for x in device_lib.list_local_devices() if x.device_type
+                == 'GPU']
+        if (not cpu) and gpu_aval:
+            use_gpu = True
+        else:
+            use_gpu = False
+
         PATH_TO_MODEL = 'light_classification/frozen_inference_graph.pb'
         self.model_graph = tf.Graph()
+
+        #if os.path.isfile(PATH_TO_MODEL):
+        #    rospy.logerr("Traffic light model file deos not exist; {0}".
+        #            format(PATH_TO_MODEL))
         with self.model_graph.as_default():
             graph_def = tf.GraphDef()
             with tf.gfile.GFile(PATH_TO_MODEL, 'rb') as fid:
@@ -23,11 +40,14 @@ class TLClassifier(object):
             self.t_boxes = self.model_graph.get_tensor_by_name('detection_boxes:0')
             self.t_scores = self.model_graph.get_tensor_by_name('detection_scores:0')
             self.t_classes = self.model_graph.get_tensor_by_name('detection_classes:0')
-        if cpu:
+
+        if not use_gpu:
             config = tf.ConfigProto(device_count={'GPU': 0})
             self.sess = tf.Session(graph=self.model_graph, config=config)
         else:
-            self.sess = tf.Session(graph=self.model_graph)
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+            self.sess = tf.Session(graph=self.model_graph, config=config)
 
     def predict(self, img):
         """

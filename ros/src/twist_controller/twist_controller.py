@@ -16,37 +16,61 @@ ONE_MPH = 0.44704
 
 
 class Controller(object):
-    # def __init__(self, *args, **kwargs):
     def __init__(self, **ros_param):
-        # Init PID TODO: tweaking
-        kp = 3.
-        ki = 0.005
-        kd = 0.1
 
-        self.pid = PID(kp, ki, kd)
+        self.max_velocity = 0.0
+        kp = 0.5
+        ki = 0.
+        kd = 0.
+        self.brake_deadband = ros_param['brake_deadband']
+        self.steer_ratio = ros_param['steer_ratio']
 
-        # Init yaw controller min_speed TODO: need test min_speed param
-        min_speed = 0.1
-        self.yaw_controller = YawController(min_speed, **ros_param)
+        self.yaw_controller = YawController(**ros_param)
+        self.pid = PID(kp, ki, kd, ros_param['decel_limit'],
+                        ros_param['accel_limit'])
 
-        pass
+        self.low_pass_filter = LowPassFilter(0.05, 0.02)
 
-    # def control(self, target_linear_velocity, target_angular_velocity,
-    #                   cur_linear_velocity, dbw_status, **kwargs):
     def control(self, target_linear_velocity, target_angular_velocity,
                       cur_linear_velocity, dbw_status):
         # Check input info is ready
-        if dbw_status is None or False:
-            return 0, 0, 0
+        if not dbw_status:
+            return 0., 0., 0.
+        else:
+            # Handle throttle.
+            # Ref discussions
+            throttle = 0.
+            throttle_err = self.pid.step(
+                    target_linear_velocity-cur_linear_velocity,
+                    0.02)
+            if throttle_err > 0.:
+                throttle = self.low_pass_filter.filt(throttle_err)
+            else:
+                throttle = 0.
 
-        # TODO: get throttle and brake
-        acc = 0.5
+            # Handle brake.
+            brake = 0.
+            if throttle_err < -self.brake_deadband:
+                brake = -throttle_err
+            if target_linear_velocity <= 0.01 and brake < self.brake_deadband:
+                brake = self.brake_deadband
 
-        acc = (target_linear_velocity - cur_linear_velocity) / 0.02
+            # Handle steering.
+            steering = 0.
+            if target_linear_velocity > self.max_velocity:
+                self.max_velocity = target_linear_velocity
 
-        # get steer angle
-        steer = self.yaw_controller.get_steering(target_linear_velocity, target_angular_velocity,
-                                                 cur_linear_velocity)
+            if self.brake_deadband <= 0.1:
+                steering = target_angular_velocity * self.steer_ratio
+            else:
+                if target_linear_velocity > 0.05:
+                    steering = self.yaw_controller.get_steering(
+                            self.max_velocity, target_angular_velocity,
+                            cur_linear_velocity)
+                else:
+                    steering = 0.0
 
-        # Return throttle, brake, steer
-        return (acc, 0., steer) if acc > 0. else (0., acc, steer)
+            return throttle, brake, steering
+
+    def reset(self):
+        self.pid.reset()
