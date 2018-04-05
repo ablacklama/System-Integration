@@ -10,6 +10,8 @@ For the light classification to work you need to download the trained inference 
 
 [real world inference graph](https://drive.google.com/open?id=1Degc0r4zolyN-_MbrrRSRXWS3TL_aF1k)
 
+Please rename the real world graph as `real_frozen_inference_graph.pb`
+
 # Team Members
 Spencer Kelly	ablacklama@gmail.com	
 
