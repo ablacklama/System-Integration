@@ -1,4 +1,7 @@
-
+"""
+    w is 0 ~ 1
+    val = w * cur_val + (1 - w) * prev_val
+"""
 class LowPassFilter(object):
     def __init__(self, tau, ts):
         self.a = 1. / (tau / ts + 1.)
