@@ -17,6 +17,6 @@ Mike Zhu	bookdaren@gmail.com
 
 Murali Madala	murali.madala6@gmail.com	
 
-Raj Uppala	raj.uppala75@gmail.com	
+Amrutraj Uppala	raj.uppala75@gmail.com	
 
 Pradeep Piskala	pradeep6002@gmail.com	
