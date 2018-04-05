@@ -1,10 +1,10 @@
 from math import atan
 
 class YawController(object):
-    def __init__(self, **ros_param):
+    def __init__(self, min_speed, **ros_param):
         # original param format:
         # https://github.com/udacity/CarND-Capstone/blob/master/ros/src/twist_controller/yaw_controller.py
-        self.min_speed = ros_param['min_speed']
+        self.min_speed = min_speed
         self.wheel_base = ros_param['wheel_base']
         self.steer_ratio = ros_param['steer_ratio']
         self.max_lat_accel = ros_param['max_lat_accel']

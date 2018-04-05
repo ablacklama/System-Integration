@@ -1,3 +1,4 @@
+import rospy
 from pid import PID
 from lowpass import LowPassFilter
 from yaw_controller import YawController
@@ -17,60 +18,81 @@ ONE_MPH = 0.44704
 
 class Controller(object):
     def __init__(self, **ros_param):
-
-        self.max_velocity = 0.0
-        kp = 0.5
-        ki = 0.
-        kd = 0.
+        """
+        :param ros_param:
+        Note:
+            sample time (sec) is based on the dbw node frequency 50Hz
+            low_pass filter:
+                val = w * cur_val + (1 - w) * prev_val
+                w is 0 ~ 1
+        """
+        # used ros_param
+        self.vehicle_mass = ros_param['vehicle_mass']
+        # self.fuel_capacity = ros_param['fuel_capacity']
         self.brake_deadband = ros_param['brake_deadband']
-        self.steer_ratio = ros_param['steer_ratio']
+        self.decel_limit = ros_param['decel_limit']
+        self.accel_limit = ros_param['accel_limit']
+        self.wheel_radius = ros_param['wheel_radius']
 
-        self.yaw_controller = YawController(**ros_param)
-        self.pid = PID(kp, ki, kd, ros_param['decel_limit'],
-                        ros_param['accel_limit'])
+        self.last_time = rospy.get_time()
 
-        self.low_pass_filter = LowPassFilter(0.05, 0.02)
+        # low pass filter for velocity
+        self.vel_lpf = LowPassFilter(0.5, .02)
+
+        # Init yaw controller
+        min_speed = 0.1   # I think min_speed
+        self.steer_controller = YawController(min_speed, **ros_param)
+        self.throttle_lpf = LowPassFilter(0.05, 0.02)  # w = 0.28
+
+        # Init throttle PID controller
+        # TODO: tweaking
+        kp = 0.5
+        ki = 0.005
+        kd = 0.1
+        acc_min = 0.
+        acc_max = self.accel_limit
+        self.throttle_controller = PID(kp, ki, kd, acc_min, acc_max)
 
     def control(self, target_linear_velocity, target_angular_velocity,
                       cur_linear_velocity, dbw_status):
         # Check input info is ready
         if not dbw_status:
+            self.throttle_controller.reset()
             return 0., 0., 0.
-        else:
-            # Handle throttle.
-            # Ref discussions
+
+        # dbw enabled: control!
+        cur_linear_velocity = self.vel_lpf.filt(cur_linear_velocity)
+
+        # get steer value
+        steering = self.steer_controller.get_steering(target_linear_velocity,
+                                                      target_angular_velocity,
+                                                      cur_linear_velocity)
+
+        # get throttle (could be < 0 so it will be updated by `get brake` as well)
+        vel_err = target_linear_velocity - cur_linear_velocity
+
+        current_time = rospy.get_time()
+        sample_time = current_time - self.last_time
+        self.last_time = current_time
+
+        throttle = self.throttle_controller.step(vel_err, sample_time)
+
+        # get brake
+        brake = 0
+        if target_linear_velocity == 0. and cur_linear_velocity < 0.1:
+            throttle = 0
+            brake = 400  # N * m - hold the car in place for the red traffic light
+        elif throttle < .1 and vel_err < 0.:
             throttle = 0.
-            throttle_err = self.pid.step(
-                    target_linear_velocity-cur_linear_velocity,
-                    0.02)
-            if throttle_err > 0.:
-                throttle = self.low_pass_filter.filt(throttle_err)
+            decel_velocity = max(vel_err, self.decel_limit)   # attention this value is < 0
+            # if less than brake_deaband, we don't need to add brake
+            # The car will deceleration by friction just release peddle
+            if abs(decel_velocity) > self.brake_deadband:
+                brake = abs(decel_velocity) * self.vehicle_mass * self.wheel_radius
             else:
-                throttle = 0.
+                brake = 0
 
-            # Handle brake.
-            brake = 0.
-            if throttle_err < -self.brake_deadband:
-                brake = -throttle_err
-            if target_linear_velocity <= 0.01 and brake < self.brake_deadband:
-                brake = self.brake_deadband
-
-            # Handle steering.
-            steering = 0.
-            if target_linear_velocity > self.max_velocity:
-                self.max_velocity = target_linear_velocity
-
-            if self.brake_deadband <= 0.1:
-                steering = target_angular_velocity * self.steer_ratio
-            else:
-                if target_linear_velocity > 0.05:
-                    steering = self.yaw_controller.get_steering(
-                            self.max_velocity, target_angular_velocity,
-                            cur_linear_velocity)
-                else:
-                    steering = 0.0
-
-            return throttle, brake, steering
+        return throttle, brake, steering
 
     def reset(self):
-        self.pid.reset()
+        self.throttle_controller.reset()

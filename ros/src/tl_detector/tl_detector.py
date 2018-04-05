@@ -57,7 +57,7 @@ class TLDetector(object):
         self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
 
         self.bridge = CvBridge()
-        self.light_classifier = TLClassifier()
+        self.light_classifier = TLClassifier(is_simulator=self.is_simulator)
 
         self.state = TrafficLight.UNKNOWN
         self.last_state = TrafficLight.UNKNOWN
@@ -185,16 +185,9 @@ class TLDetector(object):
         if(not self.new_image):
             return TrafficLight.RED, 1.0
 
-        # TODO fix non-simulator cases if needed.
-        if self.is_simulator:
-            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
-
-            #Get classification
-            traffic_class, score = self.light_classifier.get_classification(cv_image)
-        else:
-            cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
-            #Get classification
-            traffic_class, score = self.light_classifier.get_classification(cv_image)
+        cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "rgb8")
+        #Get classification
+        traffic_class, score = self.light_classifier.get_classification(cv_image)
 
         return traffic_class, score
 
