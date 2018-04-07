@@ -54,7 +54,7 @@ class WaypointUpdater(object):
 
         self.waypoints = None
         self.num_waypoints = 0
-        self.max_velocity = 2.8 # Carla max velocity. 10 Km/h.
+        self.max_velocity = 2.8 # This is updated in waypoints_cb.
         self.current_car_pos = None
         self.current_car_wpi = -1
         self.total_waypoint_distance = -1
@@ -76,7 +76,6 @@ class WaypointUpdater(object):
         self.num_wpi_to_tl = 0
         self.recalculate_velocity = False
 
-        self.batch_count = 0 # Maitain queue in batch.
         rospy.loginfo("Starting loop...")
 
         self.loop()
@@ -91,29 +90,22 @@ class WaypointUpdater(object):
                     self.is_dbw_warn_logged = True
                 continue
 
-            self.batch_count += 1
             # Final waypoints queue.
             if not self.final_waypoints:
                 self.queue_nextwp_idx = self.final_waypoints_init()
 
-            # Do batch processing; Publish in batch.
-            if (not self.recalculate_velocity) and (self.batch_count <
-                    int(LOOKAHEAD_WPS/3)):
-                continue
-            else: # Update queue.
-                self.batch_count = 0
-                next_wpi = self.get_next_wpi(self.final_waypoints,
-                        self.current_car_pos)
-                for i in xrange(next_wpi):
-                    self.final_waypoints.popleft()
+            next_wpi = self.get_next_wpi(self.final_waypoints,
+                    self.current_car_pos)
+            for i in xrange(next_wpi):
+                self.final_waypoints.popleft()
 
-                # Append new waypoints.
-                for i in xrange(next_wpi):
-                    waypoint = self.waypoints[self.queue_nextwp_idx]
-                    self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
-                            self.num_waypoints)
-                    waypoint.twist.twist.linear.x = self.max_velocity
-                    self.final_waypoints.append(waypoint)
+            # Append new waypoints.
+            for i in xrange(next_wpi):
+                waypoint = self.waypoints[self.queue_nextwp_idx]
+                self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
+                        self.num_waypoints)
+                waypoint.twist.twist.linear.x = self.max_velocity
+                self.final_waypoints.append(waypoint)
 
             # Set Control State.
             # Update velocity till tl index in final waypoints, continue if
@@ -133,19 +125,6 @@ class WaypointUpdater(object):
                     for idx in xrange(LOOKAHEAD_WPS):
                         self.set_waypoint_velocity(idx, self.max_velocity)
 
-
-            # Skip few index's if car is behind.
-            #p1 = self.final_waypoints[0].pose.pose.position
-            #p2 = self.current_car_pos.position
-            #skip_i = 0
-            #delta = math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2)
-            #if delta > 1.0: # Greater than 1 meter.
-            #    skip_i = 3
-            #    rospy.logwarn("publishing car_pos and current car_pos delta:{0}".
-            #            format(delta))
-
-            # TODO: Notice that if this is missing, re-calculate waypoints but
-            # keep their velocities.
 
             # Publish Final waypoints queue.
             self.publish_waypoints(self.final_waypoints, 0)
@@ -318,10 +297,8 @@ class WaypointUpdater(object):
 
 
         car_velocity_pow = math.pow(self.max_velocity, 2)
-        safe_stop_dist = ((car_velocity_pow/SAFE_DECELERATION_RATE) -
-                STOP_OFFSET)
-        emergency_stop_dist = ((car_velocity_pow/MAX_DECELERATION_RATE) -
-                STOP_OFFSET)
+        safe_stop_dist = car_velocity_pow/SAFE_DECELERATION_RATE
+        emergency_stop_dist = car_velocity_pow/MAX_DECELERATION_RATE
 
         rate = None
         #rospy.logwarn("Distance to TL:{0}".format(self.distance_to_tlw))
@@ -391,7 +368,7 @@ class WaypointUpdater(object):
         self.waypoints = msg.waypoints
         self.num_waypoints = len(self.waypoints)
 
-        # Get average velocity.
+        # Get average velocity and use it if no TL is detected.
         mid_i = self.num_waypoints/2
         avg_velocity = sum([self.waypoints[i].twist.twist.linear.x for i in
             xrange(mid_i, mid_i+20)])
@@ -418,8 +395,11 @@ class WaypointUpdater(object):
 
             if self.prev_tl_wpi != self.next_tl_wpi:
                 self.recalculate_velocity = True
+                # next_tl_wpi is where the car will attempt to stop. It will be
+                # car center at the line instead of front of car. Skip few
+                # waypoints from the stop line index.
                 self.distance_to_tlw = self.distance(self.waypoints,
-                        self.current_car_wpi, self.next_tl_wpi)
+                        self.current_car_wpi, self.next_tl_wpi-2)
                 self.num_wpi_to_tl = self.next_tl_wpi - self.current_car_wpi
                 self.prev_tl_wpi = self.next_tl_wpi
 
