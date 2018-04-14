@@ -5,10 +5,11 @@ import tf
 import rospy
 import itertools
 from collections import deque
+import numpy as np
 from std_msgs.msg import Int32, Bool
 from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
-
+from scipy.spatial import KDTree
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
@@ -44,211 +45,271 @@ class WaypointUpdater(object):
 
         rospy.init_node('waypoint_updater')
 
-        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
+        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb,
+                queue_size=1)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
-        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb,
+                queue_size=1)
         rospy.Subscriber('/vehicle/dbw_enabled', Bool, self.dbw_enabled_cb)
 
         # Publishing.
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
         self.waypoints = None
+        self.waypoints_tree = None
         self.num_waypoints = 0
         self.max_velocity = 2.8 # This is updated in waypoints_cb.
         self.current_car_pos = None
         self.current_car_wpi = -1
-        self.total_waypoint_distance = -1
-        self.distance_to_tlw = -1 # Distance to traffic light waypoint.
         self.dbw_enabled = False # DBW enabled; Autonomous state.
         self.final_waypoints = deque()
         self.publish_sequence_num = 0
-        self.is_dbw_warn_logged = False
         # styx_msgs/msg/TrafficLight.msg, unknown is 4.
         self.traffic_light = 4
-        self.publishing_rate = 20.0 #50.0 # Current rate of DBW and traffic-light pub.
-        # Tracking vehicle control states.
-        self.next_control_state = None
-        # Current and previous traffic light waypoint index.
-        # These will determine what will be vehicles state.
-        self.prev_tl_wpi = -1
-        self.next_tl_wpi = -1
+        self.publishing_rate = 12.0 #50.0 # Current rate of DBW and traffic-light pub.
+        self.prev_stop_wpi = -1
+        self.next_stop_wpi = -1
         self.queue_nextwp_idx = 0
-        self.num_wpi_to_tl = 0
+        self.num_wps_to_stop = 0
         self.recalculate_velocity = False
 
         rospy.loginfo("Starting loop...")
 
         self.loop()
+        #self.test_loop()
+
+    def test_loop(self):
+        ''' Test loop to validate following scenarios:
+        1. To test waypoint updater: Disable camera and manual mode.
+        2. To test tl_detector just enable Camera.
+        3. To try velocity & get_next_wpi accuracy check the output before
+        stopping.
+        4. Test controllers with varying speeds.
+        '''
+        stop_iterations = 0
+        print_once = True
+        rospy_rate = rospy.Rate(self.publishing_rate)
+        while not rospy.is_shutdown():
+            if not (self.dbw_enabled and self.waypoints and self.current_car_pos):
+                rospy_rate.sleep()
+                continue
+
+            self.current_car_wpi = self.get_next_wpi(self.current_car_pos)
+            curr_idx = self.current_car_wpi
+            self.final_waypoints_init(curr_idx)
+
+            # START Test 1; Tests decreasing velocity wrt to current wpi; check for
+            # stop at 400 + len(vel)
+            # When running this test, disable Camera and Manual.
+            # 400 is the curve point, so stopping here would be great.
+            if curr_idx > 400:
+                # Assuming these calculated velocities are given and rest are
+                # 0.0
+                vel = [4.0, 3.75, 3.5, 3.0, 2.75, 2.5, 2.25, 2.0, 1.75, 1.5,
+                        1.25, 1.0, .75, .5, .25, 0.0]
+                d = curr_idx - 400
+                if d < len(vel)-2:
+                    del vel[:d]
+                else: # ignore last few
+                    vel = None
+
+                if vel:
+                    new_v = vel
+                    rospy.logwarn("car wpi:{0}".format(curr_idx))
+                    new_v.extend([0.0 for i in range(len(vel), LOOKAHEAD_WPS)])
+                    for idx, _ in enumerate(self.final_waypoints):
+                        self.final_waypoints[idx].twist.twist.linear.x = new_v[idx]
+                    #rospy.logwarn("Final waypoints velocities:{0} published".format(
+                    #        [x.twist.twist.linear.x for x in self.final_waypoints]))
+                else:
+                    if print_once and curr_idx >= 417:
+                        rospy.logwarn("Car Stopped?. Car wpi:{0}".format(curr_idx))
+                        print_once = False
+                        rospy.logerr("FAILED, If more than 417; WPI:{0}!!!".
+                                format(curr_idx))
+
+                    for idx, _ in enumerate(self.final_waypoints):
+                        self.final_waypoints[idx].twist.twist.linear.x = 0.0
+                    # Disable 2 lines above and lines below to test 0.0 to
+                    # max_velocity start.
+                    #stop_iterations += 1
+                    #if stop_iterations <= 100: # wait for few seconds
+                    #    # Stop now!
+                    #    for idx, _ in enumerate(self.final_waypoints):
+                    #        self.final_waypoints[idx].twist.twist.linear.x = 0.0
+                    #else:
+                    #    for idx, _ in enumerate(self.final_waypoints):
+                    #        self.final_waypoints[idx].twist.twist.linear.x = self.max_velocity
+
+            self.publish_waypoints(self.final_waypoints)
+            # END TEST1.
+            rospy_rate.sleep()
 
     def loop(self):
-        prev_vi = self.max_velocity
+        prev_idx = 0
+        wp_velocities = None
+        eval_control = True
         rospy_rate = rospy.Rate(self.publishing_rate)
         while not rospy.is_shutdown():
 
-            if not self.validate_dbw():
-                if not self.is_dbw_warn_logged:
-                    self.is_dbw_warn_logged = True
+            if not (self.dbw_enabled and self.waypoints and self.current_car_pos):
+                rospy_rate.sleep()
                 continue
 
-            # Final waypoints queue.
-            if not self.final_waypoints:
-                self.queue_nextwp_idx = self.final_waypoints_init()
+            self.current_car_wpi = self.get_next_wpi(self.current_car_pos)
+            # Halt if we are close to final waypoints.
+            if self.current_car_wpi >= self.num_waypoints - 10:
+                self.final_waypoints_init(self.current_car_wpi)
+                self.update_waypoints_velocity(None, len(self.final_waypoints))
+                self.publish_waypoints(self.final_waypoints)
+                rospy_rate.sleep()
+                continue
 
-            next_wpi = self.get_next_wpi(self.final_waypoints,
-                    self.current_car_pos)
-            for i in xrange(next_wpi):
-                self.final_waypoints.popleft()
+            num_new_wps = 0
+            # Final waypoints init.
+            curr_idx = self.current_car_wpi
+            num_new_wps = curr_idx - prev_idx
+            if ((not self.final_waypoints) or (self.queue_nextwp_idx < curr_idx)):
+                self.queue_nextwp_idx = self.final_waypoints_init(curr_idx)
+            else: # Vehicle is between the final waypoints.
+                for i in xrange(num_new_wps):
+                    self.final_waypoints.popleft()
 
-            # Append new waypoints.
-            for i in xrange(next_wpi):
-                waypoint = self.waypoints[self.queue_nextwp_idx]
-                self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
-                        self.num_waypoints)
-                waypoint.twist.twist.linear.x = self.max_velocity
-                self.final_waypoints.append(waypoint)
+                    # Append new waypoint.
+                    waypoint = self.waypoints[self.queue_nextwp_idx]
+                    self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
+                            self.num_waypoints)
+                    waypoint.twist.twist.linear.x = self.max_velocity
+                    self.final_waypoints.append(waypoint)
 
             # Set Control State.
-            # Update velocity till tl index in final waypoints, continue if
-            # final waypoints is less than tl index.
             if self.recalculate_velocity:
-                #rospy.logwarn("Recalculating velocity..")
-                self.next_control_state = self.set_stopping_state()
-                self.recalculate_velocity, prev_vi = \
-                        self.update_waypoints_velocity(prev_vi)
-            else:
-                prev_vi = self.max_velocity
-                # If the vehicle is waiting at stop, Keep waiting until green.
-                if self.next_tl_wpi > 0:
-                    continue
+                if eval_control: # Avoid extra compute.
+                    control_state = self.set_stopping_state()
+                    wp_velocities = self.calculate_waypoints_velocity(control_state)
+                    rospy.loginfo("car wpi: {0}, car pos wpi: {1}, "
+                            "Stop line wpi: {2}, Waypoints to stop line velocities: {3}".
+                            format(curr_idx, self.current_car_wpi, self.next_stop_wpi, wp_velocities))
+                    self.update_waypoints_velocity(wp_velocities, 0)
+                    eval_control = False
                 else:
-                    # Re-update velocity if needed.
-                    for idx in xrange(LOOKAHEAD_WPS):
-                        self.set_waypoint_velocity(idx, self.max_velocity)
+                    # when enabling this debug log; uncomment position
+                    # calculation in pose_cb method.
+                    if curr_idx != prev_idx:
+                        rospy.loginfo("car wpi: {0}, car pos wpi:{1},"
+                                "velocity given for car wpi:{2}".
+                                format(curr_idx, self.current_car_wpi,
+                                    self.final_waypoints[0].twist.twist.linear.x))
+                    self.update_waypoints_velocity(wp_velocities, num_new_wps)
+            else:
+                eval_control = True
+                wp_velocities = None
+                #self.queue_next_idx = self.final_waypoints_init(curr_idx)
+                for idx, _ in enumerate(self.final_waypoints):
+                    self.final_waypoints[idx].twist.twist.linear.x = self.max_velocity
 
-
-            # Publish Final waypoints queue.
-            self.publish_waypoints(self.final_waypoints, 0)
-            self.is_dbw_warn_logged = False
+            self.publish_waypoints(self.final_waypoints)
             rospy_rate.sleep()
+            prev_idx = curr_idx
 
-    def final_waypoints_init(self):
+    def final_waypoints_init(self, start):
         ''' Creates an inital list of waypoints to publish.
         Returns next starting index for processing.
         '''
 
-        final_waypoints_idx = self.get_waypoints_idx(self.current_car_wpi,
-                self.current_car_wpi + LOOKAHEAD_WPS)
+        final_waypoints_idx = [idx % self.num_waypoints for idx in
+                xrange(start, start + LOOKAHEAD_WPS)]
         self.final_waypoints = deque([self.waypoints[i] for i in
                 final_waypoints_idx])
-        next_start_idx = ((self.current_car_wpi + LOOKAHEAD_WPS) %
-                self.num_waypoints)
-
         for idx, _ in enumerate(self.final_waypoints):
-                self.set_waypoint_velocity(idx, self.max_velocity)
+            self.set_waypoint_velocity(idx, self.max_velocity)
+        next_start_idx = ((start + LOOKAHEAD_WPS) % self.num_waypoints)
         return next_start_idx
 
-    def publish_waypoints(self, final_waypoints, start_index=0):
+    def publish_waypoints(self, final_waypoints):
 
         lane = Lane()
-        lane.waypoints = list(final_waypoints)[start_index:]
-        lane.header.frame_id = '/world'
-        lane.header.stamp = rospy.Time.now()
-        lane.header.seq = self.publish_sequence_num
-        self.publish_sequence_num += 1
+        lane.waypoints = final_waypoints
         self.final_waypoints_pub.publish(lane)
 
-    def update_waypoints_velocity(self, current_velocity):
+    def calculate_waypoints_velocity(self, control_state):
         '''
-        Calculate velocity for waypoints based on current state and
-        distance.
-        Returns if update continues for next iteration and last index velocity.
-        '''
-
-        '''
-        Approch 1:
-            Use V = V0 + a*t. Since we deal with negative velocity,
-            we use Vt = V(t-1)-Constant_acceleration * delta_time.
-            delta_time = Total_time/Number_of_indexes
-            Total time = Velocity of Car/Acceleration (Constants based on
-            Control state.)
-            number_of_indexs = tl_index - current_car_position.
-            At every waypoint between car and traffic light is updated
-            such that car stops by traffic light at constant rate.
-            Final time is sliced by number of waypoints between car and traffic
-            light-Delta_stopping distance.
-
-        Approch 2:
-            Inversing map, if Final velocity is the car curr poisiton and initial
-            velocity is traffic_light-delta_distance position;
-            Do velocity calculation such that;
-            distance_to_next_waypoint/total_distance * (-V) at every step.
-            V - V*(Distance_to_next_waypoint)/total.
-            V - V * (distance between all waypoints/total)
-            V - V * 1 = 0 // At final waypoint.
-            Issue: This is easy solution but compute intensive as distance
-            between waypoint is calcuated at every index between car current
-            position and Traffic light.
-
-        Following uses Approch 1. Kinematic solution to apply velocity.
+        Calculate velocity for waypoints based on current state.
+        Returns a list of calculated velocities upto stopline.
         '''
 
-        if not self.final_waypoints:
-            rospy.loginfo("No Final waypoints to be updated.")
-            return
+        '''
+        Calculation:
+        Use V = V0 + a*t. Since we deal with negative velocity,
+         we use Vt = V(t-1)-Constant_acceleration * delta_time.
+        delta_time = Total_time/Number_of_indexes
+        Total time = Velocity of Car/Acceleration (Constants based on
+        Control state.)
+        number_of_indexs = stop_index - current_car_wpi.
+        At every waypoint between car and traffic light is updated
+        such that car stops by traffic light at constant rate.
+        Final time is sliced by number of waypoints between car and traffic
+        light-Delta_stopping distance.
+        '''
 
-        # Note: Final waypoints queue always have this count.
-        if self.num_wpi_to_tl > LOOKAHEAD_WPS:
-            # For any future waypoints in queue update the velocity on add.
-            rospy.logwarn("Distance to TL > LOOKAHEAD_WPS")
-
-        #rospy.loginfo("Prev_tl_wpi:{0}, next_tl_wpi:{1}".
-        #        format(self.prev_tl_wpi, self.next_tl_wpi))
+        next_wps_velocities = deque()
         stop_time = 0
-        v_prev = current_velocity
 
-        if self.next_control_state == ControlState.SafeDecelerate:
-            stop_time = current_velocity / SAFE_DECELERATION_RATE
+        if control_state == ControlState.SafeDecelerate:
+            stop_time = self.max_velocity / SAFE_DECELERATION_RATE
             # First index is car's current position.
-            delta_time = stop_time / self.num_wpi_to_tl
-        elif self.next_control_state == ControlState.QuickDecelerate:
-            stop_time = current_velocity / MAX_DECELERATION_RATE
-            delta_time = stop_time / self.num_wpi_to_tl
+            delta_time = stop_time / self.num_wps_to_stop
+        elif control_state == ControlState.QuickDecelerate:
+            stop_time = self.max_velocity / MAX_DECELERATION_RATE
+            delta_time = stop_time / self.num_wps_to_stop
         else: # STOP
             vi = 0
 
-        for idx in xrange(self.num_wpi_to_tl):
-            if self.next_control_state == ControlState.SafeDecelerate:
+        v_prev = self.max_velocity
+        # Fill the velocities queue.
+        for idx in xrange(self.num_wps_to_stop):
+            if control_state == ControlState.SafeDecelerate:
                 # Velocity at waypoint i= vi = v0 - a*delta_time.
                 vi = v_prev - (
                         SAFE_DECELERATION_RATE * delta_time)
-            elif self.next_control_state == ControlState.QuickDecelerate:
+            elif control_state == ControlState.QuickDecelerate:
                 vi = v_prev - (
                         MAX_DECELERATION_RATE * delta_time)
             else: # Stop
                 vi = 0.0
 
-            # Update velocity for each waypoint index.
-            self.set_waypoint_velocity(idx, vi)
+            # Avoid tripping at .0 floats.
+            vi = round((vi*8.0)/8.1, 2)
+            vi = vi if vi >= 1.0 else 0.
+            # With current deceleration rates, we could end up stopping early.
+            # Add low acceleration values to end.
+            if vi == 0. and idx < self.num_wps_to_stop-3:
+                next_wps_velocities.appendleft(self.max_velocity)
+            else:
+                next_wps_velocities.append(vi)
             v_prev = vi
 
-        # set remaining waypoints from TL to beyond as 0.
-        for idx in xrange(self.num_wpi_to_tl, LOOKAHEAD_WPS):
-            self.set_waypoint_velocity(idx, 0.0)
-
-        #rospy.logwarn("Updating car_to_tl with:{0} velocities".format(
-        #        [x.twist.twist.linear.x for x in
-        #            itertools.islice(self.final_waypoints, 0,
-        #                self.num_wpi_to_tl)]))
-
-        # To recalculate on next set of queue waypoints.
-        if self.num_wpi_to_tl > LOOKAHEAD_WPS:
-            return True, v_prev
+        if next_wps_velocities:
+            return next_wps_velocities
         else:
-            return False, 0.
+            rospy.logwarn("No waypoints between Car and Stopline.")
+            return None
 
-    def get_waypoints_idx(self, start, end):
-        ''' Returns a list of waypoint index's in circular fashion. '''
-        return [idx % self.num_waypoints for idx in xrange(start, end)]
+    def update_waypoints_velocity(self, wp_velocities, num_new_wps):
+        ''' Update final waypoints velocities with calculated velocities.'''
+
+        # Remove any past indexes.
+        for i in xrange(num_new_wps):
+            if wp_velocities:
+                wp_velocities.popleft()
+
+        wp_v_len = len(wp_velocities)
+        for idx, _ in enumerate(self.final_waypoints):
+            if idx < wp_v_len:
+                vi = wp_velocities[idx]
+            else:
+                vi = 0.0
+            self.final_waypoints[idx].twist.twist.linear.x = vi
 
     def set_stopping_state(self):
         '''
@@ -260,78 +321,55 @@ class WaypointUpdater(object):
         V' = U + a*t; If we inverse the points starting from Traffic light to
         current position. U = 0 (assuming its stopped). or
         U = V'+at; U = 0 so V' = -at.
-        Assuming a = safe deceleration rate.  V' = a * t.
-        t = V'/a.
+        Assuming a = safe deceleration rate;  V' = a * t; t = V'/a.
         safe stopping distance would be d = V' * t; replacing 't' from above,
         safe_distance = (V' * V') / a.
 
-        Similararly like above, we calculate a threshold distance for
-        Emergency_stop_distance using High deceleration rate allowed.
+        Like above, we calculate a threshold distance for
+        Emergency_stop_distance using High deceleration rate (constant above).
 
         Relating traffic light state machine.
         G -> Y -> R -> G1
         |              |
         |______<_______|
 
-        a) safe_stop_dist >= self.distance_to_tlw > emergency_stop_dist =
+        a) safe_stop_dist >= car_to_stopline > emergency_stop_dist =
                 Decelerate. Green -> yellow.
-        b) emergency_stop_dist >= self.distance_to_tlw > STOP_DELTA = Stop.
+        b) emergency_stop_dist >= car_to_stopline > STOP_DELTA = Stop.
             This state is not preferred or could be improved.
             This is either Y=>R or Y|R detected very late.
             Former is okay, later is bad; So log error and continue.
-        c) STOP_DELTA <= self.distance_to_tlw => Accelerate;
-            i) R->G state.
-            ii) Y-> R
-            iii) Y|R detected too late.
-            For i & ii its okay to skip light. For ii, we probably are
-            decelerating so hard stop is fine and it really is not a hard stop.
-            No way to differenciate between i, ii & iii.
-
-        This method relies on 3 constants.
-        1) SAFE_DECELERATION_RATE.
-        2) MAX_DECELERATION_RATE.
-        3) STOP_OFFSET. Distance from light to final car stop position.
-        Note: Create a ROS subscription so that TL detector can publish,
-              current traffic light along with index. Becomes easy.
         '''
+        curr_velocity = self.max_velocity
+        car_wpi = self.current_car_wpi
+        stop_wpi = self.next_stop_wpi - 3
 
+        car_to_stopline = self.distance(self.waypoints, car_wpi, stop_wpi)
+        self.num_wps_to_stop = stop_wpi - car_wpi
+        rospy.loginfo("Stopline wpi: {0}, Distance to stop: {1},"
+                "num wpi to stop:{2}".
+                format(stop_wpi, car_to_stopline, self.num_wps_to_stop))
 
-        car_velocity_pow = math.pow(self.max_velocity, 2)
+        car_velocity_pow = math.pow(curr_velocity, 2)
         safe_stop_dist = car_velocity_pow/SAFE_DECELERATION_RATE
         emergency_stop_dist = car_velocity_pow/MAX_DECELERATION_RATE
 
         rate = None
-        #rospy.logwarn("Distance to TL:{0}".format(self.distance_to_tlw))
-        if (self.distance_to_tlw <= safe_stop_dist and
-                self.distance_to_tlw > emergency_stop_dist):
+        if car_to_stopline >= safe_stop_dist:
             rate = ControlState.SafeDecelerate
-        elif (self.distance_to_tlw <= emergency_stop_dist and
-                self.distance_to_tlw > STOP_OFFSET):
+        elif (car_to_stopline < safe_stop_dist and
+            car_to_stopline >= emergency_stop_dist):
             rate = ControlState.QuickDecelerate
         else:
             rate =  ControlState.Stop
 
-        #rospy.logwarn("Setting control state:{0} 1:SD, 2:QD, 3:Stop".format(rate))
+        rospy.loginfo("Car to stop line: {0}; Safe stop dist: {1}, "
+                " Emergency stop distance: {2}".format(car_to_stopline,
+                    safe_stop_dist, emergency_stop_dist))
+        rospy.loginfo("Setting control state:{0} 1:Safe Deceleration, "
+                "2: Quick decelerate, 3: Hard Stop".format(rate))
         return rate
 
-    def validate_dbw(self):
-        '''
-        Returns True if vehicle can follow drive-by-wire instructions.
-        '''
-
-        if not self.dbw_enabled:
-            if not self.is_dbw_warn_logged:
-                rospy.logwarn("Vehicle in manual mode.")
-            return False
-        if not self.waypoints:
-            rospy.logwarn("No base waypoints yet!")
-            return False
-        if not self.current_car_pos:
-            rospy.logwarn("Vehicle postion is invalid. (x:{0}, y:{1})".format(
-                self.current_car_pos.position.x, self.current_car_pos.position.y))
-            return False
-
-        return True
 
     def dbw_enabled_cb(self, msg):
         '''
@@ -341,9 +379,13 @@ class WaypointUpdater(object):
         self.dbw_enabled = msg.data
         rospy.loginfo("DBW enabled: {0}".format(self.dbw_enabled))
 
-        # Reset tracking values if DBW is toggled.
+        # Reset control variables.
         if not self.dbw_enabled:
-            self.next_tl_wpi = -1
+            self.current_car_wpi = -1
+            self.next_stop_wpi = -1
+            self.prev_stop_wpi = -1
+            self.final_waypoints = deque()
+
 
     def pose_cb(self, msg):
         '''
@@ -352,10 +394,11 @@ class WaypointUpdater(object):
         to the recorded waypoint of vehicle current position.
         '''
         self.current_car_pos = msg.pose
+        # Leave it for future debug.
+        #if self.waypoints:
+        #    self.current_car_wpi = self.get_next_wpi(self.current_car_pos)
 
-        if self.waypoints:
-            self.current_car_wpi = self.get_next_wpi(
-                    self.waypoints, self.current_car_pos)
+
 
     def waypoints_cb(self, msg):
         '''Call back to load all waypoints. '''
@@ -366,18 +409,22 @@ class WaypointUpdater(object):
             return
 
         self.waypoints = msg.waypoints
+        waypoints_2d = [[wp.pose.pose.position.x, wp.pose.pose.position.y] for
+                wp in self.waypoints]
+        self.waypoints_tree = KDTree(waypoints_2d)
+
         self.num_waypoints = len(self.waypoints)
 
         # Get average velocity and use it if no TL is detected.
-        mid_i = self.num_waypoints/2
+        mid_i = int(self.num_waypoints/2)
         avg_velocity = sum([self.waypoints[i].twist.twist.linear.x for i in
             xrange(mid_i, mid_i+20)])
-        self.max_velocity = 5.0 #avg_velocity/20 - 2.0
+        self.max_velocity = round(avg_velocity/20 - 3.0, 2)
         rospy.loginfo("Avg velocity:{0}".format(self.max_velocity))
 
-        self.total_waypoint_distance = self.distance(self.waypoints, 0, self.num_waypoints-1)
+        total_waypoint_distance = self.distance(self.waypoints, 0, self.num_waypoints-1)
         rospy.loginfo("Total waypoints: {0}".format(self.num_waypoints))
-        rospy.loginfo('Distance covered by waypoints: {0}'.format(self.total_waypoint_distance))
+        rospy.loginfo('Distance covered by waypoints: {0}'.format(total_waypoint_distance))
 
     def traffic_cb(self, msg):
         ''' Load traffic light waypoint index.'''
@@ -385,23 +432,22 @@ class WaypointUpdater(object):
         if not self.waypoints:
             return
 
-        # Recieves closest wpi for nearest Traffic light.
-        self.next_tl_wpi = msg.data if msg.data >= 0 else -1
+        # next_stop_wpi is where the car will attempt to stop. It will be
+        # car center at the line instead of front of car. Skip few
+        # waypoints from the stop line index.
+        # Recieves the index of the stop line closest to traffic light.
+        self.next_stop_wpi = msg.data if msg.data > 0 else -1
 
-        if self.next_tl_wpi >= 0:
-            #rospy.logwarn("traffic_cb: recieved TL:{0}".format(self.next_tl_wpi))
-            rospy.loginfo("Recieved stop traffic light. WPI: {0}".
-                    format(self.next_tl_wpi))
-
-            if self.prev_tl_wpi != self.next_tl_wpi:
+        if self.next_stop_wpi > 0:
+            if self.prev_stop_wpi != self.next_stop_wpi:
+                rospy.loginfo("Recieved new Stopline: {0}; Recalculating velocity..".
+                        format(self.next_stop_wpi))
                 self.recalculate_velocity = True
-                # next_tl_wpi is where the car will attempt to stop. It will be
-                # car center at the line instead of front of car. Skip few
-                # waypoints from the stop line index.
-                self.distance_to_tlw = self.distance(self.waypoints,
-                        self.current_car_wpi, self.next_tl_wpi-2)
-                self.num_wpi_to_tl = self.next_tl_wpi - self.current_car_wpi
-                self.prev_tl_wpi = self.next_tl_wpi
+                self.prev_stop_wpi = self.next_stop_wpi
+            else: # Same stop light reported.
+                pass
+        else:
+            self.recalculate_velocity = False
 
     def get_waypoint_velocity(self, waypoint):
         return waypoint.twist.twist.linear.x
@@ -416,47 +462,32 @@ class WaypointUpdater(object):
         ''' Overall distance between two waypoints identified by index. '''
 
         dist = 0
-        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)#  + (a.z-b.z)**2)
+        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)
         for i in xrange(wp1_i, wp2_i+1):
             dist += dl(waypoints[wp1_i].pose.pose.position,
                     waypoints[i].pose.pose.position)
             wp1_i = i
         return dist
 
-    def get_next_wpi(self, waypoints, from_pos):
-        '''
-        Return index of the waypoint closest to current position
-        from the list of waypoints noted.
-        from_pos: Position point.
-        '''
-
-        min_i = 0
-        max_dist = MAX_DISTANCE_FROM_WPP
+    def get_next_wpi(self, from_pos):
         wp_c = from_pos.position
+        min_i = self.waypoints_tree.query([wp_c.x, wp_c.y], k=1, eps=0.5)[1]
 
-        dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2) # + (a.z-b.z)**2)
-        for idx, next_waypoint in enumerate(waypoints):
-            wp_n = next_waypoint.pose.pose.position
+        # Ref: Udacity walkthrough.
+        wp = self.waypoints[min_i]
+        closest_coord = [wp.pose.pose.position.x, wp.pose.pose.position.y]
+        wp_prev = self.waypoints[min_i -1]
+        prev_coord = [wp_prev.pose.pose.position.x, wp_prev.pose.pose.position.y]
 
-            dist = dl(wp_c, wp_n)
-            # Pick closest waypoint in positive direction
-            if dist < max_dist:
-                min_i = idx
-                max_dist = dist
-            if max_dist < 1.0:
-                break
+        cl_vect = np.array(closest_coord)
+        prev_vect = np.array(prev_coord)
+        pos_vect = np.array([wp_c.x, wp_c.y])
 
-        # Did the car pass the waypoint?
-        # Ref: https://discussions.udacity.com/t/how-can-we-tell-if-the-car-have-past-the-nearest-waypoint-or-not/381909/5
-        wp_n = self.waypoints[min_i].pose.pose.position
-        dx = wp_n.x - wp_c.x
-        dy = wp_n.y - wp_c.y
-        car_o = from_pos.orientation
+        val = np.dot(cl_vect-prev_vect, pos_vect-cl_vect)
+        if val > 0:
+            min_i = (min_i + 1) % self.num_waypoints
+        return min_i
 
-        _,_,transform = tf.transformations.euler_from_quaternion([car_o.x,
-                car_o.y, car_o.z, car_o.w])
-        if math.cos(-transform)*dx - math.sin(-transform)*dy > 0.0:
-            min_i += 1
         return min_i
 
 if __name__ == '__main__':
