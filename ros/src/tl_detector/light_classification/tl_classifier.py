@@ -7,7 +7,7 @@ from styx_msgs.msg import TrafficLight
 
 # class is made to have one instance of it created and used for all images
 class TLClassifier(object):
-    def __init__(self, PATH_TO_MODEL=None, cpu=False):
+    def __init__(self, path_to_model, cpu=False):
         """
         model_dir = path to directory containing 'frozen_inference_graph.pb'
         default path is set to simulator model
@@ -24,13 +24,10 @@ class TLClassifier(object):
         else:
             use_gpu = False
 
-        if PATH_TO_MODEL is None:
-            PATH_TO_MODEL = 'light_classification/frozen_inference_graph.pb'
-
         self.model_graph = tf.Graph()
         with self.model_graph.as_default():
             graph_def = tf.GraphDef()
-            with tf.gfile.GFile(PATH_TO_MODEL, 'rb') as fid:
+            with tf.gfile.GFile(path_to_model, 'rb') as fid:
                 serialized_graph = fid.read()
                 graph_def.ParseFromString(serialized_graph)
                 tf.import_graph_def(graph_def, name='')

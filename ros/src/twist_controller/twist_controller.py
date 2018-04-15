@@ -50,7 +50,7 @@ class Controller(object):
         ki = 0.005
         kd = 0.1
         acc_min = 0.
-        acc_max = self.accel_limit
+        acc_max = 0.5 #self.accel_limit
         self.throttle_controller = PID(kp, ki, kd, acc_min, acc_max)
 
     def control(self, target_linear_velocity, target_angular_velocity,
