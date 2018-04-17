@@ -20,6 +20,12 @@ MIN_STOPPING_DISTANCE = 7 # meters; Threshold distance from traffic light to car
 USE_CLASSIFIER = True  # Use only ground truth value of Traffic light.
 STATE_COUNT_THRESHOLD = 2 if USE_CLASSIFIER else 3
 
+# These should be similar to STOP_OFFSET in waypoint_updator.py
+MAX_DISTANCE_FROM_WPP  = 10000. # Max distance between 2 waypoints; 10KM radius
+# This is 2 times that of STOP_OFFSET from waypoint_updator.py
+MIN_STOPPING_DISTANCE = 7 # meters; Threshold distance from traffic light to car.
+USE_CLASSIFIER = False  # Use only ground truth value of Traffic light.
+
 class TLDetector(object):
     def __init__(self):
         rospy.init_node('tl_detector')
