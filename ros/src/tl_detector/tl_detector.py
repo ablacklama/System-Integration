@@ -13,7 +13,12 @@ from light_classification.tl_classifier import TLClassifier
 from scipy.spatial import KDTree
 import yaml
 
-STATE_COUNT_THRESHOLD = 3
+# These should be similar to STOP_OFFSET in waypoint_updator.py
+MAX_DISTANCE_FROM_WPP  = 10000. # Max distance between 2 waypoints; 10KM radius
+# This is 2 times that of STOP_OFFSET from waypoint_updator.py
+MIN_STOPPING_DISTANCE = 7 # meters; Threshold distance from traffic light to car.
+USE_CLASSIFIER = True  # Use only ground truth value of Traffic light.
+STATE_COUNT_THRESHOLD = 2 if USE_CLASSIFIER else 3
 
 # These should be similar to STOP_OFFSET in waypoint_updator.py
 MAX_DISTANCE_FROM_WPP  = 10000. # Max distance between 2 waypoints; 10KM radius
@@ -35,7 +40,8 @@ class TLDetector(object):
         self.publishing_rate = 10.0 #50.0
         self.new_image = False
         self.tl_sight_dist = 50. # meters before sending images to classifier.
-        self.is_simulator = True
+        self.is_simulator = True if rospy.get_param("~simulator") == 1 else False
+        rospy.loginfo("SIMULATOR:{0}".format(self.is_simulator))
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)

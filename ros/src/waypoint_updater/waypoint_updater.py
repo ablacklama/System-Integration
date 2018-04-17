@@ -29,7 +29,6 @@ TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 LOOKAHEAD_WPS = 100 # Number of waypoints to publish.
 # Maximum distance from any waypoint position to current car position. 10 KM radius.
 MAX_DISTANCE_FROM_WPP = 10000. # This can be total distance in wp's.
-STOP_OFFSET = 3 # meters; Delta distance from traffic light to car final stop.
 MAX_DECELERATION_RATE = 9 # m/s^2. Reference ReadMe.txt.
 SAFE_DECELERATION_RATE = int(MAX_DECELERATION_RATE)/3 # m/s^2; Apply one-thrid
 
@@ -179,7 +178,6 @@ class WaypointUpdater(object):
                     waypoint = self.waypoints[self.queue_nextwp_idx]
                     self.queue_nextwp_idx = ((self.queue_nextwp_idx+1) %
                             self.num_waypoints)
-                    waypoint.twist.twist.linear.x = self.max_velocity
                     self.final_waypoints.append(waypoint)
 
             # Set Control State.
@@ -204,7 +202,6 @@ class WaypointUpdater(object):
             else:
                 eval_control = True
                 wp_velocities = None
-                #self.queue_next_idx = self.final_waypoints_init(curr_idx)
                 for idx, _ in enumerate(self.final_waypoints):
                     self.final_waypoints[idx].twist.twist.linear.x = self.max_velocity
 
@@ -221,8 +218,6 @@ class WaypointUpdater(object):
                 xrange(start, start + LOOKAHEAD_WPS)]
         self.final_waypoints = deque([self.waypoints[i] for i in
                 final_waypoints_idx])
-        for idx, _ in enumerate(self.final_waypoints):
-            self.set_waypoint_velocity(idx, self.max_velocity)
         next_start_idx = ((start + LOOKAHEAD_WPS) % self.num_waypoints)
         return next_start_idx
 
@@ -266,6 +261,9 @@ class WaypointUpdater(object):
             vi = 0
 
         v_prev = self.max_velocity
+        # For absolute stops (v=0); 0.0 is set at delta wp for late detection
+        # cases.
+        delta_wp = 3 if self.max_velocity <= 4.0 else 5
         # Fill the velocities queue.
         for idx in xrange(self.num_wps_to_stop):
             if control_state == ControlState.SafeDecelerate:
@@ -280,10 +278,10 @@ class WaypointUpdater(object):
 
             # Avoid tripping at .0 floats.
             vi = round((vi*8.0)/8.1, 2)
-            vi = vi if vi >= 1.0 else 0.
+            vi = vi if vi >= .5 else 0.
             # With current deceleration rates, we could end up stopping early.
             # Add low acceleration values to end.
-            if vi == 0. and idx < self.num_wps_to_stop-3:
+            if vi == 0. and idx < self.num_wps_to_stop - delta_wp:
                 next_wps_velocities.appendleft(self.max_velocity)
             else:
                 next_wps_velocities.append(vi)
@@ -303,7 +301,7 @@ class WaypointUpdater(object):
             if wp_velocities:
                 wp_velocities.popleft()
 
-        wp_v_len = len(wp_velocities)
+        wp_v_len = len(wp_velocities) if wp_velocities else 0
         for idx, _ in enumerate(self.final_waypoints):
             if idx < wp_v_len:
                 vi = wp_velocities[idx]
@@ -418,8 +416,8 @@ class WaypointUpdater(object):
         # Get average velocity and use it if no TL is detected.
         mid_i = int(self.num_waypoints/2)
         avg_velocity = sum([self.waypoints[i].twist.twist.linear.x for i in
-            xrange(mid_i, mid_i+20)])
-        self.max_velocity = round(avg_velocity/20 - 3.0, 2)
+            xrange(mid_i, mid_i+10)])
+        self.max_velocity = round(avg_velocity/10, 2)
         rospy.loginfo("Avg velocity:{0}".format(self.max_velocity))
 
         total_waypoint_distance = self.distance(self.waypoints, 0, self.num_waypoints-1)
